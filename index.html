@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Ved GPS — ZIPs/Areas ➜ Any Place Type</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Leaflet (free, no keys) -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <!-- MarkerCluster (optional) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <style>
+    :root{--bg:#0f1115;--panel:#121524;--line:#232637;--text:#eaeef5;--muted:#9aa3b2;--brand:#4f46e5}
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:var(--bg);color:var(--text)}
+    header{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
+    h1{margin:0;font-size:18px;font-weight:800}
+    .blessing{font-size:12px;color:#cbd5e1;background:#111827;border:1px solid var(--line);padding:6px 10px;border-radius:999px}
+    .wrap{display:grid;grid-template-columns:360px 1fr;gap:0;min-height:calc(100vh - 64px)}
+    aside{padding:16px;border-right:1px solid var(--line);background:var(--panel)}
+    label{font-size:12px;color:#98a2b3;display:block;margin:10px 0 6px}
+    input[type="text"], textarea, select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #2a2f45;background:#0b0f1f;color:var(--text);outline:none}
+    textarea{min-height:140px;resize:vertical}
+    button{width:100%;margin-top:14px;padding:12px 14px;border:0;border-radius:12px;font-weight:700;background:var(--brand);color:white;cursor:pointer}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .hint{font-size:12px;color:var(--muted);margin-top:6px}
+    #map{height:60vh}
+    .results{padding:16px}
+    .pill{display:inline-block;padding:2px 8px;border:1px solid #2a2f45;border-radius:999px;font-size:12px;color:#cbd5e1}
+    .row{padding:10px 0;border-bottom:1px dashed var(--line)}
+    .row b{color:#fff}
+    .muted{color:var(--muted);font-size:12px}
+    .small{font-size:12px}
+    .footer{font-size:11px;color:var(--muted);margin-top:8px}
+    a{color:#93c5fd;text-decoration:none}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .banner{padding:10px 14px;background:#111827;border-bottom:1px solid var(--line);font-weight:700;text-align:center}
+    details.debug{margin:8px 16px;color:#cbd5e1}
+    details.debug pre{white-space:pre-wrap;background:#0b0f1f;border:1px solid var(--line);padding:8px;border-radius:8px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Ved GPS — ZIPs/Areas ➜ Any Place Type</h1>
+    <div class="blessing">Thank the lord, Vishal</div>
+  </header>
+
+  <div class="banner" id="welcomeBanner" aria-live="polite">Thank the lord, Vishal</div>
+
+  <div class="wrap">
+    <aside>
+      <label>What are you searching for?</label>
+      <input id="typeInput" type="text" placeholder="e.g., banquets, wedding halls, venues, cafes, cemeteries, restaurants" value="banquets" />
+      <div class="hint">Use plain words (e.g., "banquets"). Power users can enter raw Overpass tags like <code>amenity=cafe</code> or <code>landuse=cemetery</code>. If both exist, raw tag wins.</div>
+
+      <label style="margin-top:14px;">ZIP codes or area names (one per line)</label>
+      <textarea id="areas" placeholder="11218
+Jersey City, NJ
+07030
+Edison, NJ"></textarea>
+
+      <div class="grid2">
+        <div>
+          <label>Country filter (optional, ISO2)</label>
+          <input id="country" type="text" placeholder="US" value="US" />
+        </div>
+        <div>
+          <label>Max places per area</label>
+          <select id="limit">
+            <option>50</option>
+            <option selected>100</option>
+            <option>200</option>
+          </select>
+        </div>
+      </div>
+
+      <button id="goBtn">Search</button>
+      <div class="hint">Free services: OpenStreetMap Nominatim (geocoder) + Overpass (places). Fair‑use: try 5–20 areas per run.</div>
+      <div class="footer">Attribution: © OpenStreetMap contributors. Tiles by OpenStreetMap/Carto. No API keys needed.</div>
+
+      <details class="debug">
+        <summary>⚙️ Debug & self‑tests</summary>
+        <button id="btnTests" type="button" style="margin-top:8px">Run self‑tests</button>
+        <pre id="testLog"></pre>
+      </details>
+    </aside>
+    <main>
+      <div id="map"></div>
+      <div class="results">
+        <div id="summary" class="small"></div>
+        <div id="list"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script>
+    // ==========================
+    // Tag guessing & synonyms
+    // ==========================
+    const BASE_MAP = {
+      cafe:              { key: 'amenity', val: 'cafe' },
+      cafes:             { key: 'amenity', val: 'cafe' },
+      coffee:            { key: 'amenity', val: 'cafe' },
+      restaurant:        { key: 'amenity', val: 'restaurant' },
+      restaurants:       { key: 'amenity', val: 'restaurant' },
+      bar:               { key: 'amenity', val: 'bar' },
+      bars:              { key: 'amenity', val: 'bar' },
+      pub:               { key: 'amenity', val: 'pub' },
+      pubs:              { key: 'amenity', val: 'pub' },
+      bakery:            { key: 'shop', val: 'bakery' },
+      bakeries:          { key: 'shop', val: 'bakery' },
+      florist:           { key: 'shop', val: 'florist' },
+      florists:          { key: 'shop', val: 'florist' },
+      salon:             { key: 'shop', val: 'hairdresser' },
+      salons:            { key: 'shop', val: 'hairdresser' },
+      gym:               { key: 'leisure', val: 'fitness_centre' },
+      gyms:              { key: 'leisure', val: 'fitness_centre' },
+      pharmacy:          { key: 'amenity', val: 'pharmacy' },
+      pharmacies:        { key: 'amenity', val: 'pharmacy' },
+      hospital:          { key: 'amenity', val: 'hospital' },
+      hospitals:         { key: 'amenity', val: 'hospital' },
+      clinic:            { key: 'amenity', val: 'clinic' },
+      clinics:           { key: 'amenity', val: 'clinic' },
+      school:            { key: 'amenity', val: 'school' },
+      schools:           { key: 'amenity', val: 'school' },
+      university:        { key: 'amenity', val: 'university' },
+      universities:      { key: 'amenity', val: 'university' },
+      college:           { key: 'amenity', val: 'college' },
+      colleges:          { key: 'amenity', val: 'college' },
+      library:           { key: 'amenity', val: 'library' },
+      libraries:         { key: 'amenity', val: 'library' },
+      police:            { key: 'amenity', val: 'police' },
+      firestation:       { key: 'amenity', val: 'fire_station' },
+      firestations:      { key: 'amenity', val: 'fire_station' },
+      gas:               { key: 'amenity', val: 'fuel' },
+      gasstation:        { key: 'amenity', val: 'fuel' },
+      gasstations:       { key: 'amenity', val: 'fuel' },
+      fuel:              { key: 'amenity', val: 'fuel' },
+      hotel:             { key: 'tourism', val: 'hotel' },
+      hotels:            { key: 'tourism', val: 'hotel' },
+      motel:             { key: 'tourism', val: 'motel' },
+      motels:            { key: 'tourism', val: 'motel' },
+      park:              { key: 'leisure', val: 'park' },
+      parks:             { key: 'leisure', val: 'park' },
+      dogpark:           { key: 'leisure', val: 'dog_park' },
+      dogparks:          { key: 'leisure', val: 'dog_park' },
+      playground:        { key: 'leisure', val: 'playground' },
+      playgrounds:       { key: 'leisure', val: 'playground' },
+      cemetery:          { key: 'landuse', val: 'cemetery' },
+      cemeteries:        { key: 'landuse', val: 'cemetery' },
+      cemeterys:         { key: 'landuse', val: 'cemetery' },
+      spa:               { key: 'leisure', val: 'spa' },
+      spas:              { key: 'leisure', val: 'spa' },
+      nightclub:         { key: 'amenity', val: 'nightclub' },
+      nightclubs:        { key: 'amenity', val: 'nightclub' },
+      supermarket:       { key: 'shop', val: 'supermarket' },
+      supermarkets:      { key: 'shop', val: 'supermarket' },
+      grocery:           { key: 'shop', val: 'supermarket' },
+      groceries:         { key: 'shop', val: 'supermarket' },
+      // VENUE family — composite search
+      venue:             { key: '__VENUE__', val: '__VENUE__' },
+      venues:            { key: '__VENUE__', val: '__VENUE__' },
+      banquet:           { key: '__VENUE__', val: '__VENUE__' },
+      banquets:          { key: '__VENUE__', val: '__VENUE__' },
+      banquethall:       { key: '__VENUE__', val: '__VENUE__' },
+      banquethalls:      { key: '__VENUE__', val: '__VENUE__' },
+      'banquet hall':    { key: '__VENUE__', val: '__VENUE__' },
+      'banquet halls':   { key: '__VENUE__', val: '__VENUE__' },
+      weddinghall:       { key: '__VENUE__', val: '__VENUE__' },
+      weddinghalls:      { key: '__VENUE__', val: '__VENUE__' },
+      'wedding hall':    { key: '__VENUE__', val: '__VENUE__' },
+      'wedding halls':   { key: '__VENUE__', val: '__VENUE__' },
+      weddingvenue:      { key: '__VENUE__', val: '__VENUE__' },
+      weddingvenues:     { key: '__VENUE__', val: '__VENUE__' },
+      'wedding venue':   { key: '__VENUE__', val: '__VENUE__' },
+      'wedding venues':  { key: '__VENUE__', val: '__VENUE__' },
+      receptionhall:     { key: '__VENUE__', val: '__VENUE__' },
+      receptionhalls:    { key: '__VENUE__', val: '__VENUE__' },
+      'reception hall':  { key: '__VENUE__', val: '__VENUE__' },
+      'reception halls': { key: '__VENUE__', val: '__VENUE__' },
+      ballroom:          { key: '__VENUE__', val: '__VENUE__' },
+      ballrooms:         { key: '__VENUE__', val: '__VENUE__' },
+      'event center':    { key: '__VENUE__', val: '__VENUE__' },
+      'event centre':    { key: '__VENUE__', val: '__VENUE__' },
+      'event venue':     { key: '__VENUE__', val: '__VENUE__' },
+      'event venues':    { key: '__VENUE__', val: '__VENUE__' },
+      'event space':     { key: '__VENUE__', val: '__VENUE__' },
+      'event spaces':    { key: '__VENUE__', val: '__VENUE__' },
+      'country club':    { key: '__VENUE__', val: '__VENUE__' },
+      'private dining':  { key: '__VENUE__', val: '__VENUE__' },
+      // generic "places" → any amenity
+      place:             { key: '__ANY_AMENITY__', val: '*' },
+      places:            { key: '__ANY_AMENITY__', val: '*' }
+    };
+
+    function parseTag(raw){
+      const s = (raw||'').trim().toLowerCase();
+      if (s.includes('=')){
+        const [key, val] = s.split('=').map(t=>t.trim());
+        if (key && val) return { key, val, via: 'explicit' };
+      }
+      const noSpace = s.replace(/\s+/g,'').replace(/ies$/, 'y').replace(/s$/, (m)=> s.endsWith('gas')?'s':'');
+      if (BASE_MAP[s]) return { ...BASE_MAP[s], via: 'dictionary' };
+      if (BASE_MAP[noSpace]) return { ...BASE_MAP[noSpace], via: 'heuristic' };
+      if (s.includes('coffee')) return { key:'amenity', val:'cafe', via:'contains' };
+      if (s.includes('park')) return { key:'leisure', val:'park', via:'contains' };
+      if (s.includes('hospital')) return { key:'amenity', val:'hospital', via:'contains' };
+      if (s.includes('cemet')) return { key:'landuse', val:'cemetery', via:'contains' };
+      // Unknown term → fuzzy name search
+      return { key:'__FUZZY_NAME__', val: s, via:'fuzzy-name' };
+    }
+
+    function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+
+    // ==========================
+    // Map setup
+    // ==========================
+    const map = L.map('map', { scrollWheelZoom: true }).setView([40.7128, -74.0060], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
+    const markers = L.markerClusterGroup ? L.markerClusterGroup() : L.layerGroup();
+    markers.addTo(map);
+
+    function addMarker(lat, lon, name, addr){
+      const m = L.marker([lat, lon]).bindPopup(`<b>${escapeHtml(name||'Unnamed')}</b><br>${escapeHtml(addr||'')}`);
+      markers.addLayer(m);
+    }
+
+    function escapeHtml(s){ const div=document.createElement('div'); div.textContent=s||''; return div.innerHTML; }
+
+    // ==========================
+    // DOM
+    // ==========================
+    const goBtn = document.getElementById('goBtn');
+    const typeInput = document.getElementById('typeInput');
+    const areasTA = document.getElementById('areas');
+    const countryInput = document.getElementById('country');
+    const limitSel = document.getElementById('limit');
+    const listDiv = document.getElementById('list');
+    const summaryDiv = document.getElementById('summary');
+    const btnTests = document.getElementById('btnTests');
+    const testLog = document.getElementById('testLog');
+
+    goBtn.addEventListener('click', run);
+    if (btnTests) btnTests.addEventListener('click', runSelfTests);
+
+    async function run(){
+      const rawType = typeInput.value;
+      const tag = parseTag(rawType);
+      const country = (countryInput.value||'').trim();
+      const maxPerArea = parseInt(limitSel.value,10);
+
+      const areas = areasTA.value.split('\n').map(s=>s.trim()).filter(Boolean);
+      if (areas.length===0){ alert('Add at least one ZIP or area name.'); return; }
+
+      goBtn.disabled=true; goBtn.textContent='Searching…';
+      markers.clearLayers(); listDiv.innerHTML='';
+      summaryDiv.textContent = `Searching ${areas.length} area(s) for ${
+        tag.key==='__VENUE__'?'venues':(tag.key==='__ANY_AMENITY__'?'places':(tag.key==='__FUZZY_NAME__'?`name~"${tag.val}"`:`${tag.key}=${tag.val}`))
+      } (${tag.via}).`;
+
+      let count=0; let anyBounds=null;
+
+      for (let i=0;i<areas.length;i++){
+        const q = areas[i] + (country?`, ${country}`:'');
+        try{
+          const bbox = await geocodeToBBox(q, country);
+          if(!bbox){ appendMessageRow(`❌ Could not geocode "${areas[i]}".`); continue; }
+          appendMessageRow(`📍 ${areas[i]} → bbox: ${bbox.map(n=>Number(n).toFixed(4)).join(', ')}`);
+
+          const query = buildOverpassQuery(tag.key, tag.val, bbox, maxPerArea);
+          const items = await overpassRaw(query, maxPerArea);
+
+          if(items.length===0){ appendMessageRow(`— No results for "${areas[i]}".`); }
+          else { appendMessageRow(`— Found ${items.length} in "${areas[i]}".`); }
+
+          items.forEach(it=>{
+            const lat = it.lat || (it.center && it.center.lat);
+            const lon = it.lon || (it.center && it.center.lon);
+            if(lat && lon){
+              const name = it.tags && (it.tags.name || it.tags.brand) || 'Unnamed';
+              const addr = buildAddress(it.tags || {});
+              addMarker(lat, lon, name, addr);
+              appendResultRow(name, addr, lat, lon, areas[i]);
+              anyBounds = anyBounds ? anyBounds.extend([lat,lon]) : L.latLngBounds([lat,lon],[lat,lon]);
+              count++;
+            }
+          });
+
+          await sleep(800); // be nice to free APIs
+        }catch(e){ console.error(e); appendMessageRow(`⚠️ Error on "${areas[i]}": ${e.message||e}`); }
+      }
+
+      if(anyBounds) map.fitBounds(anyBounds.pad(0.2));
+      summaryDiv.innerHTML = `<span class="pill">${count} result(s)</span> across ${areas.length} area(s).`;
+      goBtn.disabled=false; goBtn.textContent='Search';
+    }
+
+    function appendMessageRow(text){ const div=document.createElement('div'); div.className='row muted'; div.textContent=text; listDiv.appendChild(div); }
+
+    function appendResultRow(name, addr, lat, lon, area){
+      const div=document.createElement('div');
+      div.className='row';
+      div.innerHTML=`
+        <b>${escapeHtml(name)}</b><br>
+        <span class="muted">${escapeHtml(addr)}</span><br>
+        <span class="small">Lat/Lon: ${lat.toFixed(6)}, ${lon.toFixed(6)} · Area: ${escapeHtml(area)}</span>
+      `; listDiv.appendChild(div);
+    }
+
+    function buildAddress(tags){
+      const parts=[
+        tags['addr:housenumber'], tags['addr:street'],
+        tags['addr:city']||tags['addr:town']||tags['addr:suburb'],
+        tags['addr:state'], tags['addr:postcode']
+      ].filter(Boolean); return parts.join(', ');
+    }
+
+    // ==========================
+    // Geocoding → bbox
+    // ==========================
+    async function geocodeToBBox(query, countryIso2){
+      const params = new URLSearchParams({ q: query, format:'json', addressdetails:'1', polygon_geojson:'0', limit:'1' });
+      if(countryIso2) params.append('countrycodes', countryIso2.toLowerCase());
+      const url = `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+      const res = await fetch(url, { headers:{ 'Accept':'application/json' } });
+      if(!res.ok) throw new Error(`Nominatim ${res.status}`);
+      const data = await res.json();
+      if(!Array.isArray(data)||data.length===0) return null;
+      const bb = data[0].boundingbox; // [south, north, west, east]
+      return [parseFloat(bb[0]), parseFloat(bb[2]), parseFloat(bb[1]), parseFloat(bb[3])]; // (s,w,n,e)
+    }
+
+    // ==========================
+    // Overpass: query builder & fetch
+    // ==========================
+    function sanitizeRegexTerm(s){
+      return (s||'')
+        .replace(/["\\]/g,' ')      // drop quotes & backslashes
+        .replace(/[`~!@#$%^&*()+=\[\]{}|;:'<>,/?]/g,' ')
+        .trim()
+        .replace(/\s+/g,' ');
+    }
+
+    function buildOverpassQuery(key,val,bbox,limit=100){
+      const [s,w,n,e] = bbox;
+      const lim = Math.max(1, limit|0);
+
+      // Fuzzy-name search
+      if (key === '__FUZZY_NAME__'){
+        const term = sanitizeRegexTerm(val);
+        const nameRx = term.split(' ').join('.*'); // simple contains‑in‑order
+        return `
+[out:json][timeout:25];
+(
+  node["name"~"${nameRx}",i](${s},${w},${n},${e});
+  way["name"~"${nameRx}",i](${s},${w},${n},${e});
+  relation["name"~"${nameRx}",i](${s},${w},${n},${e});
+);
+out center ${lim};
+        `.trim();
+      }
+
+      // Composite venue search
+      if (key === '__VENUE__') {
+  const VENUE_NAME_RX =
+    'banquet|banqueting|wedding (hall|venue|center|centre)|reception hall|event (center|centre|space|venue|hall)|catering hall|function (hall|room)|party (hall|room)|ballroom|country club|private dining';
+
+  // amenity families often mapped as rentable halls
+  const VENUE_AMENITY_RX = 'events_venue|community_centre|conference_centre|theatre|arts_centre|social_centre|hall';
+
+  // worship names used only when venue words also appear
+  const WORSHIP_NAME_RX = '(mandir|temple|gurudwara|gurdwara|church|mosque|synagogue)';
+
+  return `
+[out:json][timeout:25];
+(
+  // 1) Direct venue-style amenities
+  node["amenity"~"${VENUE_AMENITY_RX}"](${s},${w},${n},${e});
+  way["amenity"~"${VENUE_AMENITY_RX}"](${s},${w},${n},${e});
+  relation["amenity"~"${VENUE_AMENITY_RX}"](${s},${w},${n},${e});
+
+  // 2) Country clubs + similar complexes
+  node["leisure"="country_club"](${s},${w},${n},${e});
+  way["leisure"="country_club"](${s},${w},${n},${e});
+  relation["leisure"="country_club"](${s},${w},${n},${e});
+
+  // NEW: golf courses & resorts often host rentable halls/ballrooms
+  node["leisure"="golf_course"](${s},${w},${n},${e});
+  way["leisure"="golf_course"](${s},${w},${n},${e});
+  relation["leisure"="golf_course"](${s},${w},${n},${e});
+
+  node["tourism"="resort"](${s},${w},${n},${e});
+  way["tourism"="resort"](${s},${w},${n},${e});
+  relation["tourism"="resort"](${s},${w},${n},${e});
+
+  // Optional: some clubs are mapped as sports centres
+  node["leisure"="sports_centre"](${s},${w},${n},${e});
+  way["leisure"="sports_centre"](${s},${w},${n},${e});
+  relation["leisure"="sports_centre"](${s},${w},${n},${e});
+
+  // 3) Restaurants / Hotels that advertise event space in the name
+  node["amenity"="restaurant"]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+  way["amenity"="restaurant"]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+  relation["amenity"="restaurant"]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+
+  node["tourism"="hotel"]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+  way["tourism"="hotel"]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+  relation["tourism"="hotel"]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+
+  // 4) Worship places ONLY if the name signals rentable space
+  node["amenity"="place_of_worship"]["name"~"${WORSHIP_NAME_RX}",i]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+  way["amenity"="place_of_worship"]["name"~"${WORSHIP_NAME_RX}",i]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+  relation["amenity"="place_of_worship"]["name"~"${WORSHIP_NAME_RX}",i]["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+
+  // 5) FINAL CATCH-ALL: any feature whose name clearly indicates rentable space
+  node["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+  way["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+  relation["name"~"${VENUE_NAME_RX}",i](${s},${w},${n},${e});
+);
+out center ${lim};
+  `.trim();
+}
+
+
+      // Any amenity
+      if (key === '__ANY_AMENITY__'){
+        return `
+[out:json][timeout:25];
+(
+  node[amenity](${s},${w},${n},${e});
+  way[amenity](${s},${w},${n},${e});
+  relation[amenity](${s},${w},${n},${e});
+);
+out center ${lim};
+        `.trim();
+      }
+
+      // Simple key=value
+      return `
+[out:json][timeout:25];
+(
+  node["${key}"="${val}"](${s},${w},${n},${e});
+  way["${key}"="${val}"](${s},${w},${n},${e});
+  relation["${key}"="${val}"](${s},${w},${n},${e});
+);
+out center ${lim};
+      `.trim();
+    }
+
+    async function overpassRaw(query, limit){
+      const endpoints = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter'
+      ];
+      let lastErr;
+      for (const ep of endpoints){
+        try{
+          const res = await fetch(ep, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8' }, body: new URLSearchParams({ data: query }) });
+          if(!res.ok) throw new Error(`Overpass ${res.status}`);
+          const json = await res.json();
+          return (json.elements||[]).slice(0, limit);
+        }catch(e){ lastErr = e; }
+      }
+      throw lastErr || new Error('Overpass unknown error');
+    }
+
+    // ==========================
+    // Self-tests (no network)
+    // ==========================
+    function runSelfTests(){
+      const logs = [];
+      function ok(name, cond){ logs.push((cond? '✅':'❌')+' '+name); }
+      // Test parseTag mappings
+      ok('parseTag("banquets") → __VENUE__', parseTag('banquets').key==='__VENUE__');
+      ok('parseTag("wedding halls") → __VENUE__', parseTag('wedding halls').key==='__VENUE__');
+      ok('parseTag("places") → __ANY_AMENITY__', parseTag('places').key==='__ANY_AMENITY__');
+      const t1 = parseTag('amenity=cafe'); ok('raw tag amenity=cafe', t1.key==='amenity' && t1.val==='cafe');
+      const t2 = parseTag('cemeteries'); ok('cemeteries → landuse=cemetery', t2.key==='landuse' && t2.val==='cemetery');
+      const t3 = parseTag('random blue orchid'); ok('unknown → __FUZZY_NAME__', t3.key==='__FUZZY_NAME__');
+
+      // Test query builder (structure only)
+      const bbox = [40.5,-74.3,40.9,-73.7];
+      const qVenue = buildOverpassQuery('__VENUE__','__VENUE__',bbox,25); ok('buildOverpassQuery VENUE contains name regex', /name~/.test(qVenue));
+      const qFuzzy = buildOverpassQuery('__FUZZY_NAME__','blue orchid',bbox,25); ok('fuzzy query builds', /blue.*orchid/.test(qFuzzy));
+      const qAny = buildOverpassQuery('__ANY_AMENITY__','*',bbox,10); ok('any amenity query builds', /\(\n  node\[amenity\]/.test(qAny));
+
+      testLog.textContent = logs.join('\n');
+      console.log('Self-tests:', logs);
+    }
+  </script>
+</body>
+</html>
